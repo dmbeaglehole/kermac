@@ -17,6 +17,5 @@ all = [
     "kernel_descriptor_p_norm",
     "kernel_descriptor_l1_norm",
     "kernel_descriptor_l2_norm",
-    "kernel_descriptor_mma",
-    "pre_compile_descriptors"
+    "kernel_descriptor_mma"
 ]
