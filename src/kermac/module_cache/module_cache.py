@@ -13,7 +13,6 @@ from .function_db_key import *
 from .function_db_value import *
 
 from .paths import *
-from .common import hash_cuda_include_files, get_compute_capability
 
 def get_compute_capability(device) -> str:
     if isinstance(device, torch.device):
