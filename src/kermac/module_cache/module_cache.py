@@ -2,13 +2,85 @@ import threading
 from typing import Dict, Any, Tuple, Optional, List
 import sys
 import torch
+import sqlite3
+import os
+import hashlib
 
 from cuda.core.experimental._module import Kernel
 from cuda.core.experimental import Device, Program, ProgramOptions, ObjectCode
 
+from .function_db_key import *
+from .function_db_value import *
+
 from .paths import *
 from .common import hash_cuda_include_files, get_compute_capability
-from .cubin_database import *
+
+def get_compute_capability(device) -> str:
+    if isinstance(device, torch.device):
+        pt_device_id = device.index
+        device = Device(pt_device_id)
+    
+    arch = "".join(f"{i}" for i in device.compute_capability)
+    return arch
+
+def hash_cuda_include_files(directory):
+    # Initialize SHA-256 hash object
+    hasher = hashlib.sha256()
+    
+    # Walk through the directory
+    for root, _, files in os.walk(directory):
+        # Sort files for consistent hash across runs
+        for file_name in sorted(files):
+            # Check if file is a text file (e.g., ends with .txt)
+            if file_name.endswith('.cuh'):
+                file_path = os.path.join(root, file_name)
+                try:
+                    # Read file in binary mode
+                    with open(file_path, 'rb') as f:
+                        # Update hash with file contents
+                        while chunk := f.read(8192):  # Read in 8KB chunks
+                            hasher.update(chunk)
+                except (IOError, PermissionError) as e:
+                    print(f"Error reading {file_path}: {e}")
+    
+    # Return the hexadecimal hash
+    return hasher.hexdigest()
+
+
+def cubin_db_create(db_path: str):
+    """Create the SQLite database and table if it doesn't exist."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS function_db (
+            key BLOB PRIMARY KEY,
+            value BLOB
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def cubin_db_insert_entry(db_path: str, key: FunctionDBKey, value: FunctionDBValue):
+    """Insert or replace an entry in the database using the key and value objects."""
+    key_bytes = key.to_bytes()
+    value_bytes = value.to_bytes()
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('INSERT OR REPLACE INTO function_db (key, value) VALUES (?, ?)', (key_bytes, value_bytes))
+    conn.commit()
+    conn.close()
+
+def cubin_db_get_entry(db_path: str, key: FunctionDBKey) -> FunctionDBValue | None:
+    """Retrieve a value from the database using the key object."""
+    key_bytes = key.to_bytes()
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('SELECT value FROM function_db WHERE key = ?', (key_bytes,))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return FunctionDBValue.from_bytes(result[0])
+    return None
 
 def compile_functions(
     arch,
@@ -50,63 +122,6 @@ def compile_functions(
     )
     return module_cubin
 
-def compile_and_cache_functions(
-    database: CubinDatabase,
-    cuda_version: str,
-    arch: str,
-    function_names: List[str],
-    debug = False
-):
-    function_db_keys_to_compile = []
-    function_names_to_compile = []
-
-    if debug:
-        print(f'(Kermac Debug) Checking which functions need to be compiled (sm_{arch})')
-    for function_name in function_names:
-        function_db_key = \
-            FunctionDBKey(
-                package_name=get_package_name(),
-                package_version=get_package_version(),
-                cuda_version=cuda_version,
-                arch = arch,
-                function_name=function_name
-            )
-        function_db_value = database.get_function_mapping(function_db_key)
-        if not function_db_value:
-            function_db_keys_to_compile.append(function_db_key)
-            function_names_to_compile.append(function_name)
-
-    if function_names_to_compile == []:
-        if debug:
-            print(f'(Kermac Debug) Nothing needs to compile (sm_{arch})')
-        return True
-    if debug:
-        for function_name_to_compile in function_names_to_compile:
-            print(f'(Kermac Debug) Compiling (sm_{arch}): {function_name_to_compile}') 
-    module_cubin = compile_functions(
-        arch, 
-        function_names_to_compile,
-        debug
-    )
-
-    cubin_data_hash = hashlib.sha256(module_cubin.code).digest()
-    if debug:
-        print(f'(Kermac Debug) Storing function mappings to database')
-    for function_db_key in function_db_keys_to_compile:
-        lowered_name = module_cubin._sym_map[function_db_key.function_name]
-        function_db_value = \
-            FunctionDBValue(
-                lowered_name=lowered_name,
-                cubin_data_hash=cubin_data_hash
-            )
-        database.put_function_mapping(key=function_db_key, value=function_db_value)
-    if debug:
-        print(f'(Kermac Debug) Storing cubin to database')
-    database.put_cubin(data_hash=cubin_data_hash, cubin_data=module_cubin.code)
-    if debug:
-        print(f'(Kermac Debug) Stored all mappings to database')
-    return True
-
 class Singleton(type):
     """Metaclass for creating singleton classes."""
     _instances = {}
@@ -122,11 +137,6 @@ class ModuleCache(metaclass=Singleton):
     """Singleton class mapping device IDs to lazily loaded modules/functions."""
     
     def __init__(self, debug = False):
-        # A loaded cubin module is stored in device memory
-        # Should have a dictionary to keep it live to pull kernel functions out of
-        # (device_id, cubin_data_hash) -> cubin module
-        self._loaded_modules : Dict[Tuple[int, bytes], ObjectCode] = {}
-
         # A loaded kernel function is stored in device memory also
         # (device_id, function_name) -> Kernel
         self._loaded_kernel_functions: Dict[Tuple[int, str], Kernel] = {}  
@@ -134,32 +144,13 @@ class ModuleCache(metaclass=Singleton):
         if debug:
             print(f'(Kermac Debug) Using database at: {cache_root().resolve()}')
         directory = get_include_local_cuda_dir()
-        hash_result = hash_cuda_include_files(directory)
+        self._hash_result = hash_cuda_include_files(directory)
         if debug:
-            print(f"(Kermac Debug) Combined hash of cuda source files: {hash_result}")
-        self._db = \
-            CubinDatabase(
-                cache_dir=str(cache_root().resolve()),
-                max_size_mb=1024,
-                current_file_src_hash=hash_result.encode(),
-                debug=debug
-            )
+            print(f"(Kermac Debug) Combined hash of cuda source files: {self._hash_result}")
         self._cuda_version = str(torch.version.cuda)
-
-    def compile_and_cache_functions(
-        self,
-        device,
-        function_names: List[str],
-        debug = False
-    ):
-        arch = get_compute_capability(device)
-        compile_and_cache_functions(
-            database=self._db,
-            cuda_version=self._cuda_version,
-            arch=arch,
-            function_names=function_names,
-            debug=debug
-        )
+        self._db_path = cache_root().resolve() / 'cache.db'
+        os.makedirs(cache_root().resolve(), exist_ok=True)
+        cubin_db_create(self._db_path)
 
     def get_function(self, device: Device, function_name : str, debug = False) -> Any:
         device_id = device.device_id
@@ -174,66 +165,40 @@ class ModuleCache(metaclass=Singleton):
                     print(f'(Kermac Debug) Loaded function found for (device:{device_id}, function:{function_name})')
                 kernel = self._loaded_kernel_functions[function_dict_key]
                 return kernel
-
-            if debug: 
-                print(f'(Kermac Debug) Loaded function found not found for (device:{device_id}, function:{function_name})')
+        
             arch = get_compute_capability(device)
-            function_db_key = \
-                FunctionDBKey(
-                    package_name=get_package_name(),
-                    package_version=get_package_version(),
-                    cuda_version=self._cuda_version,
-                    arch=arch,
-                    function_name=function_name
+            db_key = FunctionDBKey(
+                package_name=get_package_name(),
+                package_version=get_package_version(),
+                cuda_version=self._cuda_version,
+                arch=arch,
+                function_name=function_name,
+                cuda_source_hash=self._hash_result
+            )
+            if debug: 
+                    print(f'(Kermac Debug) Checking database for cubin of function ())')
+            db_value = cubin_db_get_entry(self._db_path, db_key)
+            if db_value is None:
+                if debug: 
+                    print(f'(Kermac Debug) Mapping does not exist for {db_key}')
+                module_cubin = compile_functions(
+                    arch, 
+                    [function_name],
+                    debug
                 )
-
-            # Check database if this function is already built for this arch
-            # The cubin module may or may not be loaded on this device
-            function_db_value = self._db.get_function_mapping(function_db_key)
-            if not function_db_value:
+                lowered_name = module_cubin._sym_map[function_name]
+                cubin_data = module_cubin.code
+                db_value = FunctionDBValue(lowered_name, cubin_data)
+                cubin_db_insert_entry(self._db_path, db_key, db_value)
                 if debug: 
-                    print(f'(Kermac Debug) Mapping does not exist for {function_db_key}')
-                # The cubin for this function doesn't exist
-                # Need to compile it
-                success = compile_and_cache_functions(
-                    database=self._db,
-                    cuda_version=self._cuda_version,
-                    arch=arch, 
-                    function_names=[function_name], 
-                    debug=debug
-                )
-
-                assert success
-            else: 
-                if debug: 
-                    print(f'(Kermac Debug) Mapping does exist for {function_db_key}')
-            # The entry should exist now
-            function_db_value = self._db.get_function_mapping(function_db_key)
-            if not function_db_value:
-                assert False
-            # There is a mapping of the function to a cubin in the database
-            cubin_data_hash = function_db_value.cubin_data_hash
-            lowered_name = function_db_value.lowered_name
-
-            # Need to check if the cubin is in a loaded module for this device
-            module_dict_key = (device_id, cubin_data_hash)
-            if not module_dict_key in self._loaded_modules:
-                if debug: 
-                    print(f'(Kermac Debug) Module not already loaded belonging to {function_name}')
-                # The module is not already loaded on this device
-                cubin_code = self._db.get_cubin(function_db_value.cubin_data_hash)
-                loaded_module = ObjectCode.from_cubin(cubin_code)
-                # Store this loaded module in the dict for later
-                self._loaded_modules[module_dict_key] = loaded_module
+                    print(f'(Kermac Debug) Compiled entry and storing with key: {db_key}')
             else:
                 if debug: 
-                    print(f'(Kermac Debug) Module already loaded belonging to {function_name}')
-
-            loaded_module = self._loaded_modules[module_dict_key]
-            # Need to construct a mapping for the function to the lowered name
-            symbol_map = {function_name: lowered_name}
+                    print(f'(Kermac Debug) Mapping does exist for {db_key}')
+            loaded_module = ObjectCode.from_cubin(db_value.cubin_data)
+            symbol_map = {function_name: db_value.lowered_name}
             loaded_module._sym_map = symbol_map
             kernel = loaded_module.get_kernel(function_name)
-            # Update the dict so it knows the function for this device is loaded
             self._loaded_kernel_functions[function_dict_key] = kernel
             return kernel
+        

@@ -14,13 +14,14 @@ def cdist_grad(
     d : torch.Tensor,           # [N,M]     # M-major # [D,M]   # z
     out : torch.Tensor = None,  # [O,N,M]   # M-major # [C,D,M] # grad
     p : Union[float, torch.Tensor] = 2.0,
+    eps : float = 1e-8,
     debug = False
 ):
     """
     Computes cdist_grad on transposed tensors with input validation with CUDA.
 
     If in terms of AGOP.
-        a is `kernel_matrix`
+        a is `grad_kernel_matrix`
         b is `x`
         c is `coefs`
         d is `z`
@@ -231,7 +232,8 @@ def cdist_grad(
         c.data_ptr(),       ld_c,                   batch_stride_c,
         d.data_ptr(),       ld_d,                   batch_stride_d,
         out.data_ptr(),     ld_e_N,     ld_e_O,     batch_stride_e,
-        p_tensor.data_ptr(),                        batch_stride_p
+        p_tensor.data_ptr(),                        batch_stride_p,
+        np.float32(eps)
     )
 
     launch(stream, config, kernel, *kernel_args)

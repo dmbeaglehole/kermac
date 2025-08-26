@@ -118,43 +118,6 @@ kernel_descriptor_mma = \
         kernel_type=KernelType.NONE,
     )
 
-def pre_compile_descriptors(
-    device,
-    descriptors: List[Any],
-    try_to_align=False,
-    debug=False
-):
-    function_names = []
-
-    if try_to_align:
-        if debug:
-            print('(Kermac Debug) Because `try_to_align` is set, generating full matrix of alignment conditions')
-
-    valid_combinations = [
-        (Majorness.ROW_MAJOR, Alignment.ALIGN_1),
-        (Majorness.COL_MAJOR, Alignment.ALIGN_1),
-    ]
-    if try_to_align:
-        valid_combinations.append((Majorness.COL_MAJOR, Alignment.ALIGN_4))
-                                  
-    for descriptor in descriptors:
-        for (majorness_A, align_A), (majorness_B, align_B) in product(valid_combinations, valid_combinations):
-            function_names.append(
-                descriptor._render_function_name(
-                    majorness_A=majorness_A,
-                    majorness_B=majorness_B,
-                    align_A=align_A, 
-                    align_B=align_B
-                )
-            )
-
-    module_cache = ModuleCache(debug)
-    module_cache.compile_and_cache_functions(
-        device=device,
-        function_names=function_names,
-        debug=debug
-    )
-
 def run_kernel(
     kernel_descriptor : KernelDescriptor,
     a : torch.Tensor,

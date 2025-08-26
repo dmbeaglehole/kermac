@@ -36,26 +36,6 @@ def main():
             kernel_type=kermac.KernelType.GAUSSIAN,
         )
 
-    descriptors = [
-        kermac.kernel_descriptor_l1_norm,
-        kermac.kernel_descriptor_l2_norm,
-        kermac.kernel_descriptor_p_norm,
-        kermac.kernel_descriptor_laplace_l1,
-        kermac.kernel_descriptor_laplace_l2,
-        kermac.kernel_descriptor_mma,
-        kernel_descriptor_gaussian_p_norm
-    ]
-
-    print('Bulk compiling kernels')
-    if debug:
-        print('(Kermac Debug) Choosing architecture from cuda device 0')
-    kermac.pre_compile_descriptors(
-        device=device,
-        descriptors=descriptors,
-        try_to_align=try_to_align,
-        debug=debug
-    )
-
     print('Running euclidean laplace kernel')
     kermac.run_kernel(
         kermac.kernel_descriptor_laplace_l2,

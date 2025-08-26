@@ -1,4 +1,5 @@
 import json
+import base64
 
 class FunctionDBKey:
     """Represents the key structure for the function database."""
@@ -8,13 +9,15 @@ class FunctionDBKey:
         package_version: str,
         cuda_version: str,
         arch: str,
-        function_name: str
+        function_name: str,
+        cuda_source_hash: bytes
     ):
         self.package_name = package_name
         self.package_version = package_version
         self.cuda_version = cuda_version
         self.arch = arch
         self.function_name = function_name
+        self.cuda_source_hash = cuda_source_hash
 
     def to_bytes(self) -> bytes:
         """Serialize the key to a bytes object for LMDB storage."""
@@ -23,7 +26,8 @@ class FunctionDBKey:
             'package_version': self.package_version,
             'cuda_version': self.cuda_version,
             'arch': self.arch,
-            'function_name': self.function_name
+            'function_name': self.function_name,
+            'cuda_source_hash': self.cuda_source_hash
         }
         return json.dumps(key_dict, sort_keys=True).encode('utf-8')
 
@@ -36,7 +40,8 @@ class FunctionDBKey:
             package_version=key_dict['package_version'],
             cuda_version=key_dict['cuda_version'],
             arch=key_dict['arch'],
-            function_name=key_dict['function_name']
+            function_name=key_dict['function_name'],
+            cuda_source_hash=key_dict['cuda_source_hash']
         )
 
     def __eq__(self, other: object) -> bool:
@@ -47,7 +52,8 @@ class FunctionDBKey:
             self.package_version == other.package_version and
             self.cuda_version == other.cuda_version and
             self.arch == other.arch and
-            self.function_name == other.function_name
+            self.function_name == other.function_name and
+            self.cuda_source_hash == other.cuda_source_hash
         )
 
     def __repr__(self) -> str:
@@ -55,4 +61,5 @@ class FunctionDBKey:
                 f"package_version={self.package_version}, "
                 f"cuda_version={self.cuda_version}, "
                 f"arch={self.arch}, "
-                f"function_name={self.function_name})")
+                f"function_name={self.function_name}, "
+                f"cuda_source_hash={self.cuda_source_hash})")

@@ -136,7 +136,7 @@ Aside from the `out` tensor in the `out=None` case **DOES NOT ALLOCATE**
 It has special code paths for $p=1.0$ and $p=2.0$ to avoid fractional power instructions.
 
 It's supposed to be used like:
-* $a_{k,m}$ is `kernel_matrix`
+* $a_{k,m}$ is `grad_kernel_matrix`
 * $b_{n,k}$ is `data_x`
 * $c_{o,k}$ is `coefficients`
 * $d_{n,m}$ is `data_z`

@@ -41,7 +41,8 @@ kernel_cute_p_norm_kernel_gradient(
     T const *C, CStride dC, CSmemLayout sC_layout, TiledCopyC copy_c,
     T const *D, DStride dD, DSmemLayout sD_layout,
     T       *E, EStride dE, ESmemLayout,
-    T       *P, PStride dP
+    T       *P, PStride dP,
+    T       epsilon
 ) {
     static_assert(norm_type == NormType::L1 || norm_type == NormType::L2 || norm_type == NormType::P);
 
@@ -382,6 +383,7 @@ kernel_cute_p_norm_kernel_gradient(
                         diff = diff;
                     } else {
                         diff = _abs(diff);
+                        diff = diff < epsilon ? epsilon : diff;
                         diff = _pow(diff, p_power_grad);
                         diff = diff * sign;
                     }
@@ -418,7 +420,8 @@ cute_norm_kernel_gradient(
     f32 const *C, u64 ldC,                u64 batch_stride_c, // solution        L,N,C     l,k,o
     f32 const *D, u64 ldD,                u64 batch_stride_d, // data_M          L,M,D     l,m,n
     f32 *E,       u64 ldE_N, u64 ldE_O,   u64 batch_stride_e, // grad            L,M,D,C   l,m,n,o
-    f32 *P,                               u64 batch_stride_p
+    f32 *P,                               u64 batch_stride_p,
+    f32 epsilon
 ) {
     using namespace cute;
     using T = f32;
@@ -492,6 +495,7 @@ cute_norm_kernel_gradient(
         C, dC, sC, copyC,
         D, dD, sD,
         E, dE, sE,
-        P, dP
+        P, dP,
+        epsilon
     );
 }

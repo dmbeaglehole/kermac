@@ -17,19 +17,6 @@ class TestCDist(unittest.TestCase):
         self.rtol = 1e-5  # Relative tolerance for numerical comparison
         self.debug = False
 
-        descriptors = [
-            kermac.kernel_descriptor_l1_norm,
-            kermac.kernel_descriptor_l2_norm,
-            kermac.kernel_descriptor_p_norm,
-        ]
-        print('Bulk compiling kernels')
-        kermac.pre_compile_descriptors(
-            device=self.device,
-            descriptors=descriptors,
-            try_to_align=True,
-            debug=self.debug
-        )
-
     def _create_tensors(self, a_col_major, b_col_major, c_col_major):
         """Create input and output tensors based on transpose flags."""
         a = torch.randn(self.L, self.K, self.M, device=self.device).permute(0,2,1) if a_col_major else torch.randn(self.L, self.M, self.K, device=self.device)
@@ -53,6 +40,7 @@ class TestCDist(unittest.TestCase):
         print(f'\t{len(transpose_combinations)} transpose configurations')
         print(f'\t{len(self.p_values)} p-value configurations (1.0, 1.3, 2.0)')
         print(f'\t{len(self.try_to_align_values)} alignment configurations')
+        print(f'\t(Might be JIT compiling all ~1min)')
         
         for (a_col_major, b_col_major, c_col_major), p, try_to_align in product(transpose_combinations, self.p_values, self.try_to_align_values):
             with self.subTest(

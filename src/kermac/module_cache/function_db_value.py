@@ -1,31 +1,41 @@
-import struct
+import json
+import base64
 
 class FunctionDBValue:
-    """Represents the value structure (lowered_name, cubin_data_hash) for the function database."""
-    def __init__(self, lowered_name: bytes, cubin_data_hash: bytes):
+    """Represents the value structure for the function database."""
+    def __init__(
+        self,
+        lowered_name: bytes,
+        cubin_data: bytes
+    ):
         self.lowered_name = lowered_name
-        self.cubin_data_hash = cubin_data_hash
+        self.cubin_data = cubin_data
 
     def to_bytes(self) -> bytes:
         """Serialize the value to a bytes object for LMDB storage."""
-        lowered_len = len(self.lowered_name)
-        return struct.pack('>I', lowered_len) + self.lowered_name + self.cubin_data_hash
+        value_dict = {
+            'lowered_name': base64.b64encode(self.lowered_name).decode('utf-8'),
+            'cubin_data': base64.b64encode(self.cubin_data).decode('utf-8')
+        }
+        return json.dumps(value_dict, sort_keys=True).encode('utf-8')
 
     @classmethod
     def from_bytes(cls, data: bytes) -> 'FunctionDBValue':
         """Deserialize bytes to a FunctionDBValue object."""
-        lowered_len = struct.unpack('>I', data[:4])[0]
-        lowered_name = data[4:4 + lowered_len]
-        cubin_data_hash = data[4 + lowered_len:]
-        return cls(lowered_name=lowered_name, cubin_data_hash=cubin_data_hash)
+        value_dict = json.loads(data.decode('utf-8'))
+        return cls(
+            lowered_name=base64.b64decode(value_dict['lowered_name']),
+            cubin_data=base64.b64decode(value_dict['cubin_data'])
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FunctionDBValue):
             return False
         return (
             self.lowered_name == other.lowered_name and
-            self.cubin_data_hash == other.cubin_data_hash
+            self.cubin_data == other.cubin_data
         )
 
     def __repr__(self) -> str:
-        return f"FunctionDBValue(lowered_name={self.lowered_name!r}, cubin_data_hash={self.cubin_data_hash!r})"
+        return (f"FunctionDBValue(lowered_name={self.lowered_name!r}, "
+                f"cubin_data={self.cubin_data!r})")
