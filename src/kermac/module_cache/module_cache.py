@@ -8,6 +8,7 @@ import hashlib
 
 from cuda.core.experimental._module import Kernel
 from cuda.core.experimental import Device, Program, ProgramOptions, ObjectCode
+import cuda.pathfinder
 
 from .function_db_key import *
 from .function_db_value import *
@@ -108,10 +109,16 @@ def compile_functions(
                 # prec_sqrt=False,
                 # prec_div=False,
                 # split_compile=8,
+                define_macro=[
+                    "__CUDA_NO_FP8_CONVERSIONS__", 
+                    "__CUDA_NO_FP6_CONVERSIONS__",
+                    "__CUDA_NO_FP4_CONVERSIONS__"
+                ],
                 include_path=[
+                    cuda.pathfinder.find_nvidia_header_directory('cccl'), # cuda toolkit 13.0 for CCCL 3.0 move.
                     get_include_local_cuda_dir(),   # include/*.cuh
                     get_include_dir_cutlass(),      # thirdparty/cutlass/include
-                    get_include_dir_cuda()          # cuda toolkit for <cuda/src/assert>, etc.. (dependency of cutlass)
+                    get_include_dir_cuda()          # cuda toolkit 12.0 for <cuda/src/assert>, etc.. (dependency of cutlass)
                 ],
             )
     ).compile(
