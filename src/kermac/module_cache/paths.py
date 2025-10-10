@@ -18,7 +18,7 @@ def get_package_version():
     except Exception as e:
         return f"Could not determine version: {e}"
 
-def get_top_level_repo_dir(dir) -> Path:
+def _get_top_level_repo_dir(dir) -> Path:
     # directory *beside* the package (wheel layout)
     wheel_copy = files(get_package_name()).parent / dir
     # directory *beside* src/ (editable / repo checkout)
@@ -31,13 +31,10 @@ def get_top_level_repo_dir(dir) -> Path:
     raise FileNotFoundError("thirdparty directory not found")
 
 def get_include_local_cuda_dir() -> Path:
-    return get_top_level_repo_dir('include')
-
-def get_local_cuda_kernel_dir() -> Path:
-    return get_top_level_repo_dir('kernels')
+    return _get_top_level_repo_dir('include')
 
 def get_include_dir_cutlass() -> Path:
-    return get_top_level_repo_dir('thirdparty') / 'cutlass/include'
+    return _get_top_level_repo_dir('thirdparty') / 'cutlass/include'
 
 def get_include_dir_cuda() -> Path:
     """Best-effort guess of the Toolkit’s <cuda>/include directory."""
