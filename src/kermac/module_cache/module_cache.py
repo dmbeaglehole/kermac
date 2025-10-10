@@ -5,6 +5,7 @@ import torch
 import sqlite3
 import os
 import hashlib
+from pathlib import Path
 
 from cuda.core.experimental._module import Kernel
 from cuda.core.experimental import Device, Program, ProgramOptions, ObjectCode
@@ -23,25 +24,26 @@ def get_compute_capability(device) -> str:
     arch = "".join(f"{i}" for i in device.compute_capability)
     return arch
 
-def hash_cuda_include_files(directory):
+def hash_cuda_include_files(directories):
     # Initialize SHA-256 hash object
     hasher = hashlib.sha256()
     
-    # Walk through the directory
-    for root, _, files in os.walk(directory):
-        # Sort files for consistent hash across runs
-        for file_name in sorted(files):
-            # Check if file is a text file (e.g., ends with .txt)
-            if file_name.endswith('.cuh'):
-                file_path = os.path.join(root, file_name)
-                try:
-                    # Read file in binary mode
-                    with open(file_path, 'rb') as f:
-                        # Update hash with file contents
-                        while chunk := f.read(8192):  # Read in 8KB chunks
-                            hasher.update(chunk)
-                except (IOError, PermissionError) as e:
-                    print(f"Error reading {file_path}: {e}")
+    for directory in directories:
+        # Walk through the directory
+        for root, _, files in os.walk(directory):
+            # Sort files for consistent hash across runs
+            for file_name in sorted(files):
+                # Check if file is a text file (e.g., ends with .txt)
+                if file_name.endswith('.cuh'):
+                    file_path = os.path.join(root, file_name)
+                    try:
+                        # Read file in binary mode
+                        with open(file_path, 'rb') as f:
+                            # Update hash with file contents
+                            while chunk := f.read(8192):  # Read in 8KB chunks
+                                hasher.update(chunk)
+                    except (IOError, PermissionError) as e:
+                        print(f"Error reading {file_path}: {e}")
     
     # Return the hexadecimal hash
     return hasher.hexdigest()
@@ -84,11 +86,12 @@ def cubin_db_get_entry(db_path: str, key: FunctionDBKey) -> FunctionDBValue | No
 
 def compile_functions(
     arch,
+    cuda_code,
     function_names,
     debug = False
 ):
     module_cubin = Program(
-        '#include <kermac.cuh>',
+        cuda_code,
         code_type="c++", 
         options= \
             ProgramOptions(
@@ -122,7 +125,7 @@ def compile_functions(
                 ],
             )
     ).compile(
-        "cubin", 
+        "ptx", 
         logs=sys.stdout,
         name_expressions=function_names
     )
@@ -149,8 +152,9 @@ class ModuleCache(metaclass=Singleton):
         self._lock = threading.Lock()
         if debug:
             print(f'(Kermac Debug) Using database at: {cache_root().resolve()}')
-        directory = get_include_local_cuda_dir()
-        self._hash_result = hash_cuda_include_files(directory)
+        include_dir = get_include_local_cuda_dir()
+        kernels_dir = get_local_cuda_kernel_dir()
+        self._hash_result = hash_cuda_include_files([include_dir, kernels_dir])
         if debug:
             print(f"(Kermac Debug) Combined hash of cuda source files: {self._hash_result}")
         self._cuda_version = str(torch.version.cuda)
@@ -158,20 +162,19 @@ class ModuleCache(metaclass=Singleton):
         os.makedirs(cache_root().resolve(), exist_ok=True)
         cubin_db_create(self._db_path)
 
-    def get_function(self, device: Device, function_name : str, debug = False) -> Any:
+    def get_function(
+            self,
+            device: Device, 
+            cuda_kernel_source_path,
+            function_name : str, 
+            debug = False
+        ) -> Any:
         device_id = device.device_id
         if device.compute_capability.major < 8:
             raise ValueError(f"Invalid device compute capability, (device:{device.compute_capability}, requrires at least:8.0")
 
         function_dict_key = (device_id, function_name)
         with self._lock:
-            # Check if this function is already loaded on this device
-            if function_dict_key in self._loaded_kernel_functions:
-                if debug: 
-                    print(f'(Kermac Debug) Loaded function found for (device:{device_id}, function:{function_name})')
-                kernel = self._loaded_kernel_functions[function_dict_key]
-                return kernel
-        
             arch = get_compute_capability(device)
             db_key = FunctionDBKey(
                 package_name=get_package_name(),
@@ -182,29 +185,32 @@ class ModuleCache(metaclass=Singleton):
                 cuda_source_hash=self._hash_result
             )
             if debug: 
-                    print(f'(Kermac Debug) Checking database for cubin of function ())')
+                print(f'(Kermac Debug) Checking database for ptx of function ())')
             db_value = cubin_db_get_entry(self._db_path, db_key)
             if db_value is None:
-                if debug: 
-                    print(f'(Kermac Debug) Mapping does not exist for {db_key}')
-                module_cubin = compile_functions(
-                    arch, 
-                    [function_name],
-                    debug
-                )
-                lowered_name = module_cubin._sym_map[function_name]
-                cubin_data = module_cubin.code
-                db_value = FunctionDBValue(lowered_name, cubin_data)
-                cubin_db_insert_entry(self._db_path, db_key, db_value)
-                if debug: 
-                    print(f'(Kermac Debug) Compiled entry and storing with key: {db_key}')
+                cuda_code_full_path = get_top_level_repo_dir('kernels') / cuda_kernel_source_path
+                with open(cuda_code_full_path, 'r') as file:
+                    content = file.read()
+                    if debug: 
+                        print(f'(Kermac Debug) Mapping does not exist for {db_key}')
+                    ptx = compile_functions(
+                        arch,
+                        content,
+                        [function_name],
+                        debug
+                    )
+                    lowered_name = ptx._sym_map[function_name]
+                    ptx_data = ptx.code
+                    db_value = FunctionDBValue(lowered_name, ptx_data)
+                    cubin_db_insert_entry(self._db_path, db_key, db_value)
+                    if debug: 
+                        print(f'(Kermac Debug) Compiled entry and storing with key: {db_key}')
             else:
                 if debug: 
                     print(f'(Kermac Debug) Mapping does exist for {db_key}')
-            loaded_module = ObjectCode.from_cubin(db_value.cubin_data)
-            symbol_map = {function_name: db_value.lowered_name}
-            loaded_module._sym_map = symbol_map
-            kernel = loaded_module.get_kernel(function_name)
-            self._loaded_kernel_functions[function_dict_key] = kernel
-            return kernel
+                ptx_data = db_value.cubin_data
+                lowered_name = db_value.lowered_name
+
+            
+            return ptx_data.decode('utf-8'), lowered_name
         

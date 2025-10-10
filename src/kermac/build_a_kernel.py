@@ -303,8 +303,49 @@ def run_kernel(
     align_4_B = Alignment.ALIGN_1 if not try_to_align else tensor_stats_b.alignment
 
     function_name = kernel_descriptor._render_function_name(tensor_stats_a.majorness, tensor_stats_b.majorness, align_4_A, align_4_B)
-    kernel = module_cache.get_function(device, function_name, debug=debug)
+    ptx, lowered_name = \
+        module_cache.get_function(
+            device,
+            'build_a_kernel.cuh',
+            function_name, 
+            debug=debug
+        )
 
+    arch = get_compute_capability(device)
+    module_cubin = Program(
+        ptx,
+        code_type="ptx", 
+        options= \
+            ProgramOptions(
+                arch=f"sm_{arch}",
+                # diag_suppress cutlass: 64-D: declaration does not declare anything
+                # diag_suppress cutlass: 1055-D: declaration does not declare anything
+                debug=True,
+                ptxas_options=['-v'],
+                # some good ones
+                # device_code_optimize=True,
+                # extensible_whole_program=True,
+                # ftz=True,
+                # extra_device_vectorization=True,
+                # restrict=True,
+                # use_fast_math=True,
+                # prec_sqrt=False,
+                # prec_div=False,
+                # split_compile=8,
+            )
+    ).compile(
+        "cubin", 
+        logs=sys.stdout,
+        name_expressions=[function_name]
+    )
+    print('here')
+
+    loaded_module = ObjectCode.from_cubin(module_cubin.code)
+    symbol_map = {function_name: lowered_name}
+    loaded_module._sym_map = symbol_map
+
+    kernel = loaded_module.get_kernel(function_name)
+    
     if debug:
         print(f'(Kermac Debug) Launching kernel: {function_name}')
 
