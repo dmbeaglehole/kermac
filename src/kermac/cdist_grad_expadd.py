@@ -16,6 +16,7 @@ def cdist_grad_expadd(
     d: torch.Tensor,  # (N,M) or (L,N,M)  float32 CUDA, stride 1 in M  (z^T)
     *,
     out: Optional[torch.Tensor] = None,  # (O,N,M) or (L,O,N,M)
+    s_km: Optional[torch.Tensor] = None,  # (K,M) or (L,K,M) precomputed S (can be scaled)
     p: Union[float, torch.Tensor] = 2.0,
     q: Union[float, torch.Tensor] = 1.0,
     c0: float = 0.0,
@@ -38,6 +39,8 @@ def cdist_grad_expadd(
     Notes:
     - `S` is computed once via `kermac.cdist_expadd` (fast fused kernel), then a
       dedicated CUDA kernel performs the (k)-accumulation for each (o,n,m).
+    - If you already have `S` (for example you need to scale it before the outer power),
+      pass it as `s_km` to avoid recomputation. `s_km` must be laid out like `a`: (K,M).
     - Inputs follow the same transposed conventions as `cdist_grad`.
     """
 
@@ -72,6 +75,7 @@ def cdist_grad_expadd(
     L = merge_batch_size("p", L, p, expected_dims=0, can_be_none=False)
     L = merge_batch_size("q", L, q, expected_dims=0, can_be_none=False)
     L = merge_batch_size("scale", L, scale, expected_dims=0, can_be_none=True)
+    L = merge_batch_size("s_km", L, s_km, expected_dims=2, can_be_none=True)
     L = merge_batch_size("a", L, a, expected_dims=2, can_be_none=False)
     L = merge_batch_size("b", L, b, expected_dims=2, can_be_none=False)
     L = merge_batch_size("c", L, c, expected_dims=2, can_be_none=False)
@@ -139,16 +143,30 @@ def cdist_grad_expadd(
 
     out = torch.zeros((L, O, N, M), dtype=torch.float32, device=tensor_device) if out is None else out
 
-    # Compute S once: use non-transposed views (points x features)
-    # b: (L,N,K) -> x: (L,K,N)
-    # d: (L,N,M) -> z: (L,M,N)
-    x = b.transpose(-2, -1).contiguous()
-    z = d.transpose(-2, -1).contiguous()
+    if s_km is None:
+        # Compute S once: use non-transposed views (points x features)
+        # b: (L,N,K) -> x: (L,K,N)
+        # d: (L,N,M) -> z: (L,M,N)
+        x = b.transpose(-2, -1).contiguous()
+        z = d.transpose(-2, -1).contiguous()
 
-    # S_mk: (L,M,K) or (M,K)
-    S_mk = cdist_expadd(z, x, p=p_t, scale=scale_t, try_to_align=try_to_align, debug=debug)
-    # Make S_km: (L,K,M) to match a's (K,M) indexing
-    S_km = S_mk.transpose(-2, -1).contiguous()
+        # S_mk: (L,M,K) or (M,K)
+        S_mk = cdist_expadd(z, x, p=p_t, scale=scale_t, try_to_align=try_to_align, debug=debug)
+        # Make S_km: (L,K,M) to match a's (K,M) indexing
+        S_km = S_mk.transpose(-2, -1).contiguous()
+    else:
+        if not isinstance(s_km, torch.Tensor):
+            raise TypeError("s_km must be a torch.Tensor if provided")
+        if s_km.dtype != torch.float32:
+            raise TypeError("s_km must have dtype torch.float32")
+        if not s_km.is_cuda or s_km.device != tensor_device:
+            raise ValueError("s_km must be on the same CUDA device as inputs")
+        if s_km.dim() not in (2, 3):
+            raise ValueError("s_km must be 2D or 3D (batched)")
+        # Ensure last dim contiguous
+        if s_km.stride(-1) != 1:
+            s_km = s_km.contiguous()
+        S_km = s_km
 
     stats_s = tensor_stats(S_km)
 
